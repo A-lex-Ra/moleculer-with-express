@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { useInView } from 'react-intersection-observer';
 import { api } from '../api';
 
-export function AvailableList() {
+export const AvailableList = forwardRef((props, ref) => {
     const [items, setItems] = useState([]);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
@@ -10,7 +10,27 @@ export function AvailableList() {
     const [newItemId, setNewItemId] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const { ref, inView } = useInView();
+    // Track items that have been restored locally but maybe not yet confirmed by server
+    const optimisticItemsRef = useRef(new Map());
+
+    const { ref: inViewRef, inView } = useInView();
+
+    useImperativeHandle(ref, () => ({
+        restoreItem: (item) => {
+            // Add to optimistic storage
+            optimisticItemsRef.current.set(item.id, item);
+
+            setItems(prev => {
+                if (prev.find(i => i.id === item.id)) return prev;
+                const newItems = [...prev, item];
+                newItems.sort((a, b) => {
+                    if (typeof a.id === 'number' && typeof b.id === 'number') return a.id - b.id;
+                    return String(a.id).localeCompare(String(b.id));
+                });
+                return newItems;
+            });
+        }
+    }));
 
     const fetchItems = useCallback(async (reset = false) => {
         if (loading) return;
@@ -19,11 +39,45 @@ export function AvailableList() {
             const p = reset ? 1 : page;
             const data = await api.listAvailable(p, search);
 
+            // Remove items from optimistic map if they are present in the server data
+            // (Server has caught up)
+            data.forEach(item => {
+                if (optimisticItemsRef.current.has(item.id)) {
+                    optimisticItemsRef.current.delete(item.id);
+                }
+            });
+
             if (reset) {
-                setItems(data);
+                // Merge server data with remaining optimistic items
+                const optimisticList = Array.from(optimisticItemsRef.current.values());
+                // Only include optimistic items that match current search
+                const filteredOptimistic = optimisticList.filter(item =>
+                    !search || String(item.id).includes(search)
+                );
+
+                // Combine and deduplicate
+                const combined = [...data];
+                filteredOptimistic.forEach(optItem => {
+                    if (!combined.find(i => i.id === optItem.id)) {
+                        combined.push(optItem);
+                    }
+                });
+
+                // Sort
+                combined.sort((a, b) => {
+                    if (typeof a.id === 'number' && typeof b.id === 'number') return a.id - b.id;
+                    return String(a.id).localeCompare(String(b.id));
+                });
+
+                setItems(combined);
                 setPage(2);
             } else {
-                setItems(prev => [...prev, ...data]);
+                setItems(prev => {
+                    // We don't need to merge optimistic items here usually, as they are likely already in 'prev'
+                    // or will be handled by the reset logic if we scroll back up.
+                    // But to be safe, just append data.
+                    return [...prev, ...data];
+                });
                 setPage(p + 1);
             }
 
@@ -55,16 +109,6 @@ export function AvailableList() {
     useEffect(() => {
         const interval = setInterval(() => {
             // Only fetch if we are at the top or if we want to sync
-            // For simplicity, we just re-fetch the current page view or just page 1?
-            // Infinite scroll makes polling hard. 
-            // But we need to sync "Available" items (some might be selected by others).
-            // Let's just re-fetch the current list (or at least the first page) to keep it somewhat in sync.
-            // Or better: rely on the user scrolling. 
-            // But the requirement says "receiving ... data once a second".
-            // Let's re-fetch the first page every second if we are at the top, or just rely on manual actions.
-            // Actually, if we just want to update the "Selected" list when we select something, we can use a callback.
-            // But for "Available", if someone else selects an item, it should disappear.
-            // Let's implement a simple poll for the first page.
             if (page === 2 && !search) { // Only if we haven't scrolled far
                 fetchItems(true);
             }
@@ -89,7 +133,6 @@ export function AvailableList() {
             // Optimistic update
             setItems(prev => prev.filter(i => i.id !== id));
             await api.selectItem(id);
-            // Trigger global refresh if possible, or just wait for polling in SelectedList
         } catch (err) {
             console.error(err);
             fetchItems(true);
@@ -126,9 +169,9 @@ export function AvailableList() {
                     </div>
                 ))}
                 {loading && <div className="loading">Loading...</div>}
-                {!loading && hasMore && <div ref={ref} className="loading">Scroll for more</div>}
+                {!loading && hasMore && <div ref={inViewRef} className="loading">Scroll for more</div>}
                 {!loading && !hasMore && items.length === 0 && <div className="loading">No items found</div>}
             </div>
         </div>
     );
-}
+});

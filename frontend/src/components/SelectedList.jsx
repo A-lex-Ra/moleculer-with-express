@@ -40,7 +40,7 @@ function SortableItem({ item, onUnselect }) {
     );
 }
 
-export function SelectedList() {
+export function SelectedList({ onItemUnselected }) {
     const [items, setItems] = useState([]);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
@@ -127,8 +127,12 @@ export function SelectedList() {
     };
 
     const handleUnselect = async (id) => {
+        const item = items.find(i => i.id === id);
         try {
             setItems(prev => prev.filter(i => i.id !== id));
+            if (item && onItemUnselected) {
+                onItemUnselected(item);
+            }
             await api.unselectItem(id);
         } catch (err) {
             console.error(err);

@@ -3,10 +3,18 @@ import { AvailableList } from './components/AvailableList';
 import { SelectedList } from './components/SelectedList';
 
 function App() {
+  const availableListRef = React.useRef();
+
+  const handleItemUnselected = (item) => {
+    if (availableListRef.current) {
+      availableListRef.current.restoreItem(item);
+    }
+  };
+
   return (
     <div className="app-container">
-      <AvailableList />
-      <SelectedList />
+      <AvailableList ref={availableListRef} />
+      <SelectedList onItemUnselected={handleItemUnselected} />
     </div>
   );
 }
