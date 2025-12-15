@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useInView } from 'react-intersection-observer';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -43,7 +43,7 @@ function SortableItem({ item, onUnselect }) {
     );
 }
 
-export function SelectedList({ onItemUnselected }) {
+export const SelectedList = forwardRef(({ onItemUnselected }, ref) => {
     const [items, setItems] = useState([]);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
@@ -54,8 +54,30 @@ export function SelectedList({ onItemUnselected }) {
     const pendingUnselections = useRef(new Set());
     // Track optimistic order
     const optimisticOrder = useRef(null);
+    // Track optimistic additions (items selected but not yet confirmed by server)
+    const optimisticAdditions = useRef(new Map());
 
-    const { ref, inView } = useInView();
+    const { ref: inViewRef, inView } = useInView();
+
+    useImperativeHandle(ref, () => ({
+        addItem: (item) => {
+            // If we are adding it, it's definitely not pending unselection anymore
+            if (pendingUnselections.current.has(item.id)) {
+                pendingUnselections.current.delete(item.id);
+            }
+
+            // Add to optimistic additions
+            optimisticAdditions.current.set(item.id, item);
+
+            setItems(prev => {
+                if (prev.find(i => i.id === item.id)) return prev;
+                const newItems = [...prev, item];
+                // We could sort here if we want, or just append. 
+                // Usually selected items are appended.
+                return newItems;
+            });
+        }
+    }));
 
     const sensors = useSensors(
         useSensor(PointerSensor),
@@ -88,18 +110,40 @@ export function SelectedList({ onItemUnselected }) {
                 }
             }
 
+            // Check if optimistic additions are present in server response
+            // If so, remove them from optimistic tracking
+            data.forEach(item => {
+                if (optimisticAdditions.current.has(item.id)) {
+                    optimisticAdditions.current.delete(item.id);
+                }
+            });
+
             if (reset) {
+                // Merge remaining optimistic additions
+                const optimisticList = Array.from(optimisticAdditions.current.values());
+                const filteredOptimistic = optimisticList.filter(item =>
+                    !search || String(item.id).includes(search)
+                );
+
+                // Combine: server data + optimistic additions that aren't in server data yet
+                const combined = [...filteredData];
+                filteredOptimistic.forEach(optItem => {
+                    if (!combined.find(i => i.id === optItem.id)) {
+                        combined.push(optItem);
+                    }
+                });
+
                 // Apply optimistic order if it exists
                 if (optimisticOrder.current) {
                     const orderMap = new Map(optimisticOrder.current.map((id, index) => [id, index]));
-                    filteredData.sort((a, b) => {
+                    combined.sort((a, b) => {
                         const indexA = orderMap.has(a.id) ? orderMap.get(a.id) : Infinity;
                         const indexB = orderMap.has(b.id) ? orderMap.get(b.id) : Infinity;
                         return indexA - indexB;
                     });
                 }
 
-                setItems(filteredData);
+                setItems(combined);
                 setPage(2);
             } else {
                 setItems(prev => {
@@ -225,9 +269,9 @@ export function SelectedList({ onItemUnselected }) {
                 </DndContext>
 
                 {loading && <div className="loading">Loading...</div>}
-                {!loading && hasMore && <div ref={ref} className="loading">Scroll for more</div>}
+                {!loading && hasMore && <div ref={inViewRef} className="loading">Scroll for more</div>}
                 {!loading && !hasMore && items.length === 0 && <div className="loading">No selected items</div>}
             </div>
         </div>
     );
-}
+});

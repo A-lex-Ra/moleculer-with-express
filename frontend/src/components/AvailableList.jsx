@@ -59,8 +59,10 @@ export const AvailableList = forwardRef((props, ref) => {
                 // Merge server data with remaining optimistic items
                 const optimisticList = Array.from(optimisticItemsRef.current.values());
                 // Only include optimistic items that match current search
+                // AND are not in pendingSelections
                 const filteredOptimistic = optimisticList.filter(item =>
-                    !search || String(item.id).includes(search)
+                    (!search || String(item.id).includes(search)) &&
+                    !pendingSelections.current.has(item.id)
                 );
 
                 // Combine and deduplicate
@@ -137,12 +139,18 @@ export const AvailableList = forwardRef((props, ref) => {
     };
 
     const handleSelect = async (id) => {
+        const item = items.find(i => i.id === id);
         try {
             // Add to pending selections
             pendingSelections.current.add(id);
 
             // Optimistic update
             setItems(prev => prev.filter(i => i.id !== id));
+
+            if (item && props.onItemSelected) {
+                props.onItemSelected(item);
+            }
+
             await api.selectItem(id);
         } catch (err) {
             console.error(err);
