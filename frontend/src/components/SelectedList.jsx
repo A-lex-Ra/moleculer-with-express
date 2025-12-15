@@ -52,6 +52,8 @@ export function SelectedList({ onItemUnselected }) {
 
     // Track pending unselections to prevent flickering
     const pendingUnselections = useRef(new Set());
+    // Track optimistic order
+    const optimisticOrder = useRef(null);
 
     const { ref, inView } = useInView();
 
@@ -70,7 +72,7 @@ export function SelectedList({ onItemUnselected }) {
             const data = await api.listSelected(p, search);
 
             // Filter out items that are pending unselection
-            const filteredData = data.filter(item => {
+            let filteredData = data.filter(item => {
                 if (pendingUnselections.current.has(item.id)) {
                     return false;
                 }
@@ -87,13 +89,35 @@ export function SelectedList({ onItemUnselected }) {
             }
 
             if (reset) {
+                // Apply optimistic order if it exists
+                if (optimisticOrder.current) {
+                    const orderMap = new Map(optimisticOrder.current.map((id, index) => [id, index]));
+                    filteredData.sort((a, b) => {
+                        const indexA = orderMap.has(a.id) ? orderMap.get(a.id) : Infinity;
+                        const indexB = orderMap.has(b.id) ? orderMap.get(b.id) : Infinity;
+                        return indexA - indexB;
+                    });
+                }
+
                 setItems(filteredData);
                 setPage(2);
             } else {
                 setItems(prev => {
                     // Avoid duplicates if any (though server shouldn't send duplicates)
                     const newItems = filteredData.filter(d => !prev.find(p => p.id === d.id));
-                    return [...prev, ...newItems];
+                    const combined = [...prev, ...newItems];
+
+                    // Re-sort combined list if we have optimistic order
+                    if (optimisticOrder.current) {
+                        const orderMap = new Map(optimisticOrder.current.map((id, index) => [id, index]));
+                        combined.sort((a, b) => {
+                            const indexA = orderMap.has(a.id) ? orderMap.get(a.id) : Infinity;
+                            const indexB = orderMap.has(b.id) ? orderMap.get(b.id) : Infinity;
+                            return indexA - indexB;
+                        });
+                    }
+
+                    return combined;
                 });
                 setPage(p + 1);
             }
@@ -139,6 +163,9 @@ export function SelectedList({ onItemUnselected }) {
                 const oldIndex = items.findIndex(i => i.id === active.id);
                 const newIndex = items.findIndex(i => i.id === over.id);
                 const newItems = arrayMove(items, oldIndex, newIndex);
+
+                // Update optimistic order
+                optimisticOrder.current = newItems.map(i => i.id);
 
                 // Send new order to server
                 // We send the IDs of the currently loaded items in their new order
