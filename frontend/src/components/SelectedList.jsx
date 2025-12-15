@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useInView } from 'react-intersection-observer';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -27,11 +27,14 @@ function SortableItem({ item, onUnselect }) {
             <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
                 <span>{item.name}</span>
                 <button
+                    className="delete-btn"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
-                        e.stopPropagation(); // Prevent drag start
+                        e.stopPropagation();
                         onUnselect(item.id);
                     }}
-                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem', background: '#ef4444' }}
+                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem', background: '#ef4444', cursor: 'pointer', zIndex: 20, position: 'relative' }}
                 >
                     X
                 </button>
@@ -46,6 +49,9 @@ export function SelectedList({ onItemUnselected }) {
     const [hasMore, setHasMore] = useState(true);
     const [search, setSearch] = useState('');
     const [loading, setLoading] = useState(false);
+
+    // Track pending unselections to prevent flickering
+    const pendingUnselections = useRef(new Set());
 
     const { ref, inView } = useInView();
 
@@ -63,13 +69,30 @@ export function SelectedList({ onItemUnselected }) {
             const p = reset ? 1 : page;
             const data = await api.listSelected(p, search);
 
+            // Filter out items that are pending unselection
+            const filteredData = data.filter(item => {
+                if (pendingUnselections.current.has(item.id)) {
+                    return false;
+                }
+                return true;
+            });
+
+            // Check if any pending unselections are NO LONGER in the server response
+            // If so, we can stop tracking them
+            const serverIds = new Set(data.map(i => i.id));
+            for (const id of pendingUnselections.current) {
+                if (!serverIds.has(id)) {
+                    pendingUnselections.current.delete(id);
+                }
+            }
+
             if (reset) {
-                setItems(data);
+                setItems(filteredData);
                 setPage(2);
             } else {
                 setItems(prev => {
                     // Avoid duplicates if any (though server shouldn't send duplicates)
-                    const newItems = data.filter(d => !prev.find(p => p.id === d.id));
+                    const newItems = filteredData.filter(d => !prev.find(p => p.id === d.id));
                     return [...prev, ...newItems];
                 });
                 setPage(p + 1);
@@ -129,6 +152,9 @@ export function SelectedList({ onItemUnselected }) {
     const handleUnselect = async (id) => {
         const item = items.find(i => i.id === id);
         try {
+            // Add to pending unselections
+            pendingUnselections.current.add(id);
+
             setItems(prev => prev.filter(i => i.id !== id));
             if (item && onItemUnselected) {
                 onItemUnselected(item);
@@ -136,6 +162,8 @@ export function SelectedList({ onItemUnselected }) {
             await api.unselectItem(id);
         } catch (err) {
             console.error(err);
+            // If failed, remove from pending and refetch
+            pendingUnselections.current.delete(id);
             fetchItems(true);
         }
     };

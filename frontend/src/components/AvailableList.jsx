@@ -12,11 +12,16 @@ export const AvailableList = forwardRef((props, ref) => {
 
     // Track items that have been restored locally but maybe not yet confirmed by server
     const optimisticItemsRef = useRef(new Map());
+    // Track items that have been selected locally but maybe still returned by server
+    const pendingSelections = useRef(new Set());
 
     const { ref: inViewRef, inView } = useInView();
 
     useImperativeHandle(ref, () => ({
         restoreItem: (item) => {
+            // If we are restoring it, it's no longer a pending selection
+            pendingSelections.current.delete(item.id);
+
             // Add to optimistic storage
             optimisticItemsRef.current.set(item.id, item);
 
@@ -37,7 +42,10 @@ export const AvailableList = forwardRef((props, ref) => {
         setLoading(true);
         try {
             const p = reset ? 1 : page;
-            const data = await api.listAvailable(p, search);
+            let data = await api.listAvailable(p, search);
+
+            // Filter out pending selections
+            data = data.filter(item => !pendingSelections.current.has(item.id));
 
             // Remove items from optimistic map if they are present in the server data
             // (Server has caught up)
@@ -73,10 +81,10 @@ export const AvailableList = forwardRef((props, ref) => {
                 setPage(2);
             } else {
                 setItems(prev => {
-                    // We don't need to merge optimistic items here usually, as they are likely already in 'prev'
-                    // or will be handled by the reset logic if we scroll back up.
-                    // But to be safe, just append data.
-                    return [...prev, ...data];
+                    // Filter duplicates and pending selections from prev just in case
+                    const validPrev = prev.filter(i => !pendingSelections.current.has(i.id));
+                    // Append new data
+                    return [...validPrev, ...data];
                 });
                 setPage(p + 1);
             }
@@ -130,11 +138,16 @@ export const AvailableList = forwardRef((props, ref) => {
 
     const handleSelect = async (id) => {
         try {
+            // Add to pending selections
+            pendingSelections.current.add(id);
+
             // Optimistic update
             setItems(prev => prev.filter(i => i.id !== id));
             await api.selectItem(id);
         } catch (err) {
             console.error(err);
+            // If failed, remove from pending and refetch
+            pendingSelections.current.delete(id);
             fetchItems(true);
         }
     };
